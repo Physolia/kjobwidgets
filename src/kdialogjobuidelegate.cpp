@@ -14,7 +14,7 @@
 #include <QWidget>
 
 #include <KJob>
-#include <KMessageBox>
+#include <KMessageDialog>
 #include <kjobwidgets.h>
 
 #include <config-kjobwidgets.h>
@@ -24,7 +24,7 @@
 
 struct MessageBoxData {
     QWidget *widget;
-    KMessageBox::DialogType type;
+    KMessageDialog::Type type;
     QString msg;
 };
 
@@ -32,24 +32,22 @@ class KDialogJobUiDelegatePrivate : public QObject
 {
     Q_OBJECT
 public:
-    explicit KDialogJobUiDelegatePrivate(QObject *parent = nullptr);
+    explicit KDialogJobUiDelegatePrivate(KDialogJobUiDelegate *qq);
     ~KDialogJobUiDelegatePrivate() override;
-    void queuedMessageBox(QWidget *widget, KMessageBox::DialogType type, const QString &msg);
+    void queuedMessageBox(QWidget *widget, KMessageDialog::Type type, const QString &msg);
 
-    QWidget *window;
+    QWidget *window = nullptr;
 
 public Q_SLOTS:
     void next();
 
 private:
-    bool running;
+    bool running = false;
     QQueue<QSharedPointer<MessageBoxData>> queue;
 };
 
-KDialogJobUiDelegatePrivate::KDialogJobUiDelegatePrivate(QObject *parent)
-    : QObject(parent)
-    , window(nullptr)
-    , running(false)
+KDialogJobUiDelegatePrivate::KDialogJobUiDelegatePrivate(KDialogJobUiDelegate *qq)
+    : QObject(qq)
 {
 }
 
@@ -67,19 +65,21 @@ void KDialogJobUiDelegatePrivate::next()
 
     QSharedPointer<MessageBoxData> data = queue.dequeue();
 
-    // kmessagebox starts a new event loop which can cause this to get deleted
-    // https://bugs.kde.org/show_bug.cgi?id=356321#c16
-    QPointer<KDialogJobUiDelegatePrivate> thisGuard(this);
-    KMessageBox::messageBox(data->widget, data->type, data->msg);
+    auto *dlg = new KMessageDialog(data->type, data->msg, data->widget);
+    dlg->setAttribute(Qt::WA_DeleteOnClose);
+    dlg->setModal(true);
+    dlg->setButtons();
 
-    if (!thisGuard) {
-        return;
-    }
+    connect(this, &QObject::destroyed, dlg, &QDialog::reject);
 
-    QMetaObject::invokeMethod(this, "next", Qt::QueuedConnection);
+    connect(dlg, &QDialog::finished, window, [this]() {
+        QMetaObject::invokeMethod(this, &KDialogJobUiDelegatePrivate::next, Qt::QueuedConnection);
+    });
+
+    dlg->show();
 }
 
-void KDialogJobUiDelegatePrivate::queuedMessageBox(QWidget *widget, KMessageBox::DialogType type, const QString &msg)
+void KDialogJobUiDelegatePrivate::queuedMessageBox(QWidget *widget, KMessageDialog::Type type, const QString &msg)
 {
     QSharedPointer<MessageBoxData> data(new MessageBoxData);
     data->type = type;
@@ -90,19 +90,19 @@ void KDialogJobUiDelegatePrivate::queuedMessageBox(QWidget *widget, KMessageBox:
 
     if (!running) {
         running = true;
-        QMetaObject::invokeMethod(this, "next", Qt::QueuedConnection);
+        QMetaObject::invokeMethod(this, &KDialogJobUiDelegatePrivate::next, Qt::QueuedConnection);
     }
 }
 
 KDialogJobUiDelegate::KDialogJobUiDelegate()
     : KJobUiDelegate()
-    , d(new KDialogJobUiDelegatePrivate)
+    , d(new KDialogJobUiDelegatePrivate(this))
 {
 }
 
 KDialogJobUiDelegate::KDialogJobUiDelegate(KJobUiDelegate::Flags flags, QWidget *window)
     : KJobUiDelegate(flags)
-    , d(new KDialogJobUiDelegatePrivate)
+    , d(new KDialogJobUiDelegatePrivate(this))
 {
     d->window = window;
 }
@@ -152,14 +152,14 @@ unsigned long KDialogJobUiDelegate::userTimestamp() const
 void KDialogJobUiDelegate::showErrorMessage()
 {
     if (job()->error() != KJob::KilledJobError) {
-        d->queuedMessageBox(window(), KMessageBox::Error, job()->errorString());
+        d->queuedMessageBox(window(), KMessageDialog::Error, job()->errorString());
     }
 }
 
 void KDialogJobUiDelegate::slotWarning(KJob * /*job*/, const QString &plain, const QString & /*rich*/)
 {
     if (isAutoWarningHandlingEnabled()) {
-        d->queuedMessageBox(window(), KMessageBox::Information, plain);
+        d->queuedMessageBox(window(), KMessageDialog::Information, plain);
     }
 }
 
